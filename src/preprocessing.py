@@ -18,7 +18,7 @@ def resize_crop_images(input_path, output_path):
 
     os.makedirs(output_path, exist_ok=True)
     for i, filename in enumerate(os.listdir(input_path)):
-        if filename.endswith(".jpg") or filename.endswith(".JPG"):
+        if filename.endswith(".jpg") or filename.endswith(".JPG") or filename.endswith(".png"):
             c_path = os.path.join(input_path, filename)
             img = Image.open(c_path).convert("RGB")
             crop = transforms.Compose([

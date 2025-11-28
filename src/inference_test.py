@@ -7,7 +7,8 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import bitsandbytes as bnb
 
 
-MODEL_ID = "black-forest-labs/FLUX.1-dev"
+# MODEL_ID = "black-forest-labs/FLUX.1-dev"
+MODEL_ID = "/tmp/cedric_sillaber_model_dev/snapshots/3de623fc3c33e44ffbe2bad470d0f45bccf2eb21"
 OUTPUT_DIR = "flux_lora_output"
 
 

@@ -5,14 +5,20 @@ from diffusers import FluxTransformer2DModel, FluxPipeline
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model
 import bitsandbytes as bnb
+import tqdm
 
-MODEL_ID = "black-forest-labs/FLUX.1-dev"
+# MODEL_ID = "black-forest-labs/FLUX.1-dev"
+MODEL_ID = "/tmp/cedric_sillaber_model_dev/snapshots/3de623fc3c33e44ffbe2bad470d0f45bccf2eb21"
 CACHE_DIR = "res/cache"
-OUTPUT_DIR = "flux_lora_output"
-STEPS = 500
-LEARNING_RATE = 2e-5
+# OUTPUT_DIR = "flux_lora_output"
+OUTPUT_DIR = "/tmp/cedric_sillaber/lora_output"
+STEPS = 5000
+LEARNING_RATE = 8e-5
 BATCH_SIZE = 1
 DEVICE = "cuda"
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 def sample(transformer, step, output_dir, prompt="a photo of gkqz man"):
     pipe = FluxPipeline.from_pretrained(
@@ -75,6 +81,7 @@ def collate_fn(batch):
 def train():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # to get a quantized model
     nf4_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -82,7 +89,6 @@ def train():
         bnb_4bit_use_double_quant=True
     )
 
-    print("Loading model...")
     transformer = FluxTransformer2DModel.from_pretrained(
         MODEL_ID,
         subfolder="transformer",
@@ -103,6 +109,7 @@ def train():
         bias="none"
     )
     transformer = get_peft_model(transformer, lora_config)
+    transformer = torch.compile(transformer)
     transformer.train()
 
     optimizer = bnb.optim.AdamW8bit(
@@ -117,8 +124,10 @@ def train():
     print("Starting training loop...")
     global_step = 0
 
+    total_loss = 0
+    counter = 0
     while global_step < STEPS:
-        for batch in dl:
+        for i, batch in tqdm.tqdm(enumerate(dl), total=len(dl), leave=False):
             if global_step >= STEPS: break
 
             latents, prompt_embeds, pooled_prompt_embeds = [x.to(DEVICE, dtype=torch.bfloat16) for x in batch]
@@ -151,16 +160,22 @@ def train():
             loss = torch.nn.functional.mse_loss(model_pred.float(), packed_target.float(), reduction="mean")
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad()
 
+            total_loss += loss.item()
+            counter += 1
             global_step += 1
-            if global_step % 3 == 0:
-                print(f"Step {global_step}/{STEPS}, Loss: {loss.item():.4f}")
 
-            if (global_step +1) % 10 == 0:
+
+            if (global_step ) % 100 == 0:
                 transformer.save_pretrained(f"{OUTPUT_DIR}/step_{global_step:04d}")
 
+        avg_loss = total_loss / counter
+        print(f"Step {global_step}/{STEPS}, Loss: {avg_loss:.4f}")
+        total_loss = 0
+        counter = 0
 
 
     transformer.save_pretrained(OUTPUT_DIR)
