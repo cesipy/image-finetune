@@ -1,20 +1,18 @@
 import os
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset; from torch.optim.lr_scheduler import CosineAnnealingLR
 from diffusers import FluxTransformer2DModel, FluxPipeline
 from transformers import BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, PeftModel
 import bitsandbytes as bnb
 import tqdm
 
-# MODEL_ID = "black-forest-labs/FLUX.1-dev"
-MODEL_ID = "/tmp/cedric_sillaber_model_dev/snapshots/3de623fc3c33e44ffbe2bad470d0f45bccf2eb21"
+MODEL_ID = "black-forest-labs/FLUX.1-dev"
 CACHE_DIR = "res/cache"
-# OUTPUT_DIR = "flux_lora_output"
-OUTPUT_DIR = "/tmp/cedric_sillaber/lora_output"
-STEPS = 5000
-LEARNING_RATE = 8e-5
-BATCH_SIZE = 1
+OUTPUT_DIR = "20251201_flux_lora_output-1e-4"
+STEPS = 4000
+LEARNING_RATE = 1e-4
+BATCH_SIZE = 3
 DEVICE = "cuda"
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -78,7 +76,7 @@ def collate_fn(batch):
     pooled_prompt_embeds = torch.stack([item["pooled_prompt_embeds"] for item in batch]).squeeze(1)
     return latents, prompt_embeds, pooled_prompt_embeds
 
-def train():
+def train(resume_path=None):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # to get a quantized model
@@ -89,10 +87,16 @@ def train():
         bnb_4bit_use_double_quant=True
     )
 
+    int8_config = BitsAndBytesConfig(
+        load_in_8bit=True,
+    )
+
+
     transformer = FluxTransformer2DModel.from_pretrained(
         MODEL_ID,
         subfolder="transformer",
         quantization_config=nf4_config,
+        # quantization_config=int8_config,
         torch_dtype=torch.bfloat16
     )
 
@@ -101,14 +105,23 @@ def train():
     # force gradients on the first layer (x_embedder)
     transformer.x_embedder.register_forward_hook(make_inputs_require_grad)
 
-    lora_config = LoraConfig(
-        r=16,
-        lora_alpha=16,
-        init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-        bias="none"
-    )
-    transformer = get_peft_model(transformer, lora_config)
+    if resume_path:
+        transformer = PeftModel.from_pretrained(
+            transformer,
+            resume_path,
+            is_trainable=True
+        )
+    else:
+        lora_config = LoraConfig(
+            r=32,
+            lora_alpha=32,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0",
+                "add_k_proj", "add_q_proj", "add_v_proj",
+            ],
+            bias="none"
+        )
+        transformer = get_peft_model(transformer, lora_config)
     transformer = torch.compile(transformer)
     transformer.train()
 
@@ -134,7 +147,8 @@ def train():
 
             noise = torch.randn_like(latents).to(DEVICE)
             bsz = latents.shape[0]
-            t = torch.sigmoid(torch.randn((bsz,), device=DEVICE))
+            # t = torch.sigmoid(torch.randn((bsz,), device=DEVICE))
+            t = torch.rand((bsz,), device=DEVICE)
 
             t_expanded = t.view(bsz, 1, 1, 1)
             noisy_latents = (1 - t_expanded) * latents + t_expanded * noise
@@ -161,7 +175,7 @@ def train():
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
-            optimizer.step()
+            optimizer.step();#scheduler.step()
             optimizer.zero_grad()
 
             total_loss += loss.item()
@@ -180,5 +194,9 @@ def train():
 
     transformer.save_pretrained(OUTPUT_DIR)
 
+
+
 if __name__ == "__main__":
-    train()
+    # train()
+    path = "cps/20250112_gpu10-1e-4/step_2000"
+    train(resume_path=path)

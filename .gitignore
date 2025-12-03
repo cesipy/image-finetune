@@ -3,3 +3,5 @@ flux_lora_output
 .python-version
 pyproject.toml
 venv
+prompts.txt
+cps
